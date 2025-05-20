@@ -1,0 +1,82 @@
+#cloud-config
+
+write_files:
+  - path: /root/oci-vps-setup.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -e
+      echo "Starting OCI VPS setup..."
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then 
+          echo "Please run as root or with sudo"
+          exit 1
+      fi
+      # Function to install a package if not already installed
+      install_if_missing() {
+          if ! dpkg -l "$1" &> /dev/null; then
+              echo "Installing $1..."
+              nala install -y "$1"
+          else
+              echo "$1 is already installed"
+          fi
+      }
+      # Check if nala is installed
+      if ! command -v nala &> /dev/null; then
+          echo "nala is not installed. Installing nala..."
+          apt-get update
+          apt-get install nala -y
+      fi
+      echo "Updating package lists..."
+      nala update
+      echo "Upgrading system packages..."
+      nala upgrade -y
+      PACKAGES="git nala nano vim ca-certificates curl gnupg"
+      for pkg in $PACKAGES; do
+          install_if_missing "$pkg"
+      done
+      # Docker setup
+      echo "Setting up Docker..."
+      for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do 
+          if dpkg -l | grep -q "^ii.*$pkg"; then
+              echo "Removing $pkg..."
+              nala remove -y $pkg
+          fi
+      done
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+        tee /etc/apt/sources.list.d/docker.list > /dev/null
+      nala update
+      nala install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      if systemctl is-active --quiet docker; then
+          echo "Docker service is running"
+      else
+          echo "Starting Docker service..."
+          systemctl start docker
+      fi
+      echo "Testing Docker installation..."
+      docker run hello-world || true
+      echo "Docker installation completed!"
+      echo "To use Docker without sudo, run: sudo usermod -aG docker $USER"
+      # Tailscale setup
+      if command -v tailscale &> /dev/null; then
+          echo "Tailscale is already installed"
+          tailscale status || true
+      else
+          echo "Installing Tailscale..."
+          curl -fsSL https://tailscale.com/install.sh | sh
+          if command -v tailscale &> /dev/null; then
+              echo "Tailscale installed successfully!"
+              echo "To connect to your Tailscale network, run: sudo tailscale up"
+          else
+              echo "Error: Tailscale installation failed"
+              exit 1
+          fi
+      fi
+      echo "OCI VPS setup completed successfully!"
+runcmd:
+  - [ bash, /root/oci-vps-setup.sh ]
